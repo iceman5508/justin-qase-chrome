@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Justin-Qase Chrome Bridge",
+  "version": "1.0",
+  "description": "Sends tickets and PRs directly to Justin in VS Code.",
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Click to open Justin-Qase"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}
