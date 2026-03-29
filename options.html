@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Justin-Qase Settings</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background-color: #f3f4f6;
+      color: #111827;
+      display: flex;
+      justify-content: center;
+      padding-top: 50px;
+      margin: 0;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      width: 400px;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 24px;
+      color: #0ea5e9;
+      border-bottom: 2px solid #e5e7eb;
+      padding-bottom: 10px;
+    }
+    .setting-group {
+      margin-top: 20px;
+    }
+    label {
+      font-weight: 600;
+      display: block;
+      margin-bottom: 8px;
+    }
+    select {
+      width: 100%;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+      outline: none;
+      cursor: pointer;
+    }
+    select:focus {
+      border-color: #0ea5e9;
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.2);
+    }
+    .status {
+      margin-top: 15px;
+      font-size: 13px;
+      color: #10b981;
+      font-weight: 500;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>Justin-Qase Settings</h1>
+    
+    <div class="setting-group">
+      <label for="themeSelect">Appearance</label>
+      <select id="themeSelect">
+        <option value="dark">Dark Mode (Default)</option>
+        <option value="light">Light Mode</option>
+      </select>
+    </div>
+
+    <div class="status" id="statusMsg"></div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

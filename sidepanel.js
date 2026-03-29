@@ -1,8 +1,62 @@
 let activeCommand = '/ask'; 
 let conversationHistory = []; 
+let isConnected = false;
 
+// --- THE HEARTBEAT MONITOR ---
+async function checkConnection() {
+    const statusDiv = document.getElementById('connectionStatus');
+    const statusText = statusDiv.querySelector('.status-text');
+    const sendBtn = document.getElementById('sendBtn');
+    
+    try {
+        const response = await fetch('http://localhost:4891/ping', { method: 'GET' });
+        if (response.ok) {
+            if (!isConnected) {
+                isConnected = true;
+                statusDiv.classList.add('online');
+                statusText.innerText = 'Connected to VS Code';
+                // Only reset the text to "Submit" if it was stuck on a connection message
+                if (sendBtn.innerText === 'Connecting...' || sendBtn.innerText === 'Start VS Code Sandbox!') {
+                    sendBtn.innerText = 'Submit';
+                }
+                sendBtn.disabled = false;
+            }
+        } else {
+            throw new Error("Bad response");
+        }
+    } catch (error) {
+        if (isConnected || sendBtn.innerText === 'Connecting...') {
+            isConnected = false;
+            statusDiv.classList.remove('online');
+            statusText.innerText = 'Offline';
+            
+            // Only overwrite the text if Justin isn't actively thinking
+            if (sendBtn.innerText !== 'Justin is thinking...') {
+                sendBtn.innerText = 'Start VS Code Sandbox!';
+            }
+            sendBtn.disabled = true;
+        }
+    }
+}
+
+// Check immediately, then every 3 seconds
+checkConnection();
+setInterval(checkConnection, 3000);
+
+// --- THEME LISTENER ---
+function applyTheme(theme) {
+    if (theme === 'light') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', 'dark');
+}
+
+chrome.storage.onChanged.addListener((changes) => {
+    if (changes.justinTheme) applyTheme(changes.justinTheme.newValue);
+});
+
+// --- INIT: LOAD CHAT HISTORY & THEME ---
 document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.local.get(['justinHistory'], function(result) {
+    chrome.storage.local.get(['justinHistory', 'justinTheme'], function(result) {
+        applyTheme(result.justinTheme || 'dark'); 
         if (result.justinHistory && result.justinHistory.length > 0) {
             conversationHistory = result.justinHistory;
             renderChat();
@@ -61,7 +115,7 @@ function parseMarkdown(text) {
         const termSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
         return `<div class="terminal-block">
                     <div class="terminal-cmd">$ ${cleanCmd}</div>
-                    <button class="terminal-btn" data-cmd="${encodedCmd}">${termSvg} Run in VS Code</button>
+                    <button class="terminal-btn" data-cmd="${encodedCmd}">${termSvg} Stage in Terminal</button>
                 </div>`;
     });
 
@@ -73,9 +127,9 @@ function parseMarkdown(text) {
         const zapSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
         const header = `
             <div class="code-header">
-                <span style="display:flex; align-items:center;">${fileSvg} ${cleanFile}</span>
-                <button class="apply-file-btn" style="display:flex; align-items:center;" data-filename="${cleanFile}" data-code="${encodedCode}">
-                    ${zapSvg} Apply File
+                <span style="display:flex; align-items:center; color: #fff;">${fileSvg} ${cleanFile}</span>
+                <button class="apply-file-btn" data-filename="${cleanFile}" data-code="${encodedCode}">
+                    ${zapSvg} Apply
                 </button>
             </div>`;
         return `<div class="code-block">${header}<pre><code>${code}</code></pre></div>`;
@@ -85,7 +139,7 @@ function parseMarkdown(text) {
         const langLabel = language ? `<span>${language}</span>` : '<span>CODE</span>';
         const rawCode = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
         const encodedCode = encodeURIComponent(rawCode);
-        const header = `<div class="code-header">${langLabel}<button class="insert-btn" data-code="${encodedCode}">Insert at Cursor</button></div>`;
+        const header = `<div class="code-header"><span style="color: #fff;">${langLabel}</span><button class="insert-btn" data-code="${encodedCode}">Insert</button></div>`;
         return `<div class="code-block">${header}<pre><code>${code}</code></pre></div>`;
     });
 
@@ -99,12 +153,11 @@ function parseMarkdown(text) {
 }
 
 document.getElementById('responseBox').addEventListener('click', async (e) => {
-    
     const termBtn = e.target.closest('.terminal-btn');
     if (termBtn) {
         const cmdToRun = decodeURIComponent(termBtn.getAttribute('data-cmd'));
         const originalHtml = termBtn.innerHTML;
-        termBtn.innerHTML = 'Running...';
+        termBtn.innerHTML = 'Staging...';
         try {
             const response = await fetch('http://localhost:4891', {
                 method: 'POST',
@@ -112,14 +165,14 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
                 body: JSON.stringify({ command: 'terminal', terminalCommand: cmdToRun })
             });
             if (response.ok) {
-                termBtn.innerHTML = 'Executed!';
-                termBtn.style.backgroundColor = '#4CAF50'; 
-                setTimeout(() => { termBtn.innerHTML = originalHtml; termBtn.style.backgroundColor = '#795e26'; }, 2000);
+                termBtn.innerHTML = 'Staged!';
+                termBtn.style.backgroundColor = '#10b981'; 
+                setTimeout(() => { termBtn.innerHTML = originalHtml; termBtn.style.backgroundColor = ''; }, 2000);
             } else { throw new Error("Failed"); }
         } catch (error) {
             termBtn.innerHTML = 'Error';
-            termBtn.style.backgroundColor = '#f44336'; 
-            alert("Failed to run command. Make sure VS Code is open.");
+            termBtn.style.backgroundColor = '#ef4444'; 
+            alert("Failed to connect to VS Code.");
         }
         return; 
     }
@@ -138,12 +191,12 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
             });
             if (response.ok) {
                 applyBtn.innerHTML = 'File Saved!';
-                applyBtn.style.backgroundColor = '#4CAF50'; 
-                setTimeout(() => { applyBtn.innerHTML = originalHtml; applyBtn.style.backgroundColor = '#D32F2F'; }, 2000);
+                applyBtn.style.backgroundColor = '#10b981'; 
+                setTimeout(() => { applyBtn.innerHTML = originalHtml; applyBtn.style.backgroundColor = ''; }, 2000);
             } else { throw new Error("Failed"); }
         } catch (error) {
             applyBtn.innerHTML = 'Error';
-            applyBtn.style.backgroundColor = '#f44336'; 
+            applyBtn.style.backgroundColor = '#ef4444'; 
             alert("Failed to write file. Make sure VS Code is open to a workspace directory.");
         }
         return;
@@ -152,6 +205,7 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
     if (e.target.classList.contains('insert-btn')) {
         const codeToInsert = decodeURIComponent(e.target.getAttribute('data-code'));
         const btn = e.target;
+        const originalText = btn.innerText;
         btn.innerText = 'Inserting...';
         try {
             const response = await fetch('http://localhost:4891', {
@@ -161,13 +215,13 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
             });
             if (response.ok) {
                 btn.innerText = 'Inserted!';
-                btn.style.backgroundColor = '#4CAF50'; 
-                setTimeout(() => { btn.innerText = 'Insert at Cursor'; btn.style.backgroundColor = '#0e639c'; }, 2000);
+                btn.style.backgroundColor = '#10b981'; 
+                setTimeout(() => { btn.innerText = originalText; btn.style.backgroundColor = ''; }, 2000);
             } else { throw new Error("Failed"); }
         } catch (error) {
             btn.innerText = 'Error';
-            btn.style.backgroundColor = '#f44336'; 
-            alert("Failed to insert code. Is your VS Code Sandbox open and active?");
+            btn.style.backgroundColor = '#ef4444'; 
+            alert("Failed to insert code.");
         }
         return;
     }
@@ -178,13 +232,12 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
         try {
             await navigator.clipboard.writeText(rawMd);
             const originalHTML = copyBtn.innerHTML;
-            copyBtn.innerHTML = '<span style="color: #4CAF50;">Copied!</span>';
+            copyBtn.innerHTML = '<span style="color: #10b981;">Copied!</span>';
             setTimeout(() => { copyBtn.innerHTML = originalHTML; }, 2000);
-        } catch (err) { alert("Failed to copy to clipboard."); }
+        } catch (err) { alert("Failed to copy."); }
     }
 });
 
-// Switch tool visually and logically
 function switchTool(commandStr) {
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
     const btnToActive = document.querySelector(`.tool-btn[data-cmd="${commandStr}"]`);
@@ -207,9 +260,7 @@ document.querySelectorAll('.tool-btn').forEach(btn => {
 document.getElementById('scrapeBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab || !tab.url) { alert("Chrome is hiding this page from me."); return; }
-        if (!tab.url.startsWith('http')) { alert("I can't read this specific type of page."); return; }
-
+        if (!tab || !tab.url) return;
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
@@ -222,46 +273,36 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
                 return `Ticket: ${document.title}\n\n(Could not automatically find the description. Please highlight and click 'Auto-Read' again!)`;
             }
         }, (results) => {
-            if (chrome.runtime.lastError) { alert("Chrome blocked me from reading this page."); return; }
             if (results && results[0] && results[0].result) { document.getElementById('taskInput').value = results[0].result; }
         });
-    } catch (error) { console.error("Scraping error:", error); }
+    } catch (error) {}
 });
 
-// --- NEW: THE ELEMENT PICKER LOGIC ---
 document.getElementById('inspectBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab || !tab.url.startsWith('http')) { 
-            alert("Cannot inspect this system page."); 
-            return; 
-        }
+        if (!tab || !tab.url.startsWith('http')) { alert("Cannot inspect this system page."); return; }
 
-        // Change the button text so the user knows it's working
         const inspectBtn = document.getElementById('inspectBtn');
         const originalHtml = inspectBtn.innerHTML;
         inspectBtn.innerHTML = `<span style="color: #fff; font-weight: bold;">Hover over the page!</span>`;
 
-        // Inject the tracking script into the active tab
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
-                // Prevent duplicate injections
                 if (window.__justinPicking) return;
                 window.__justinPicking = true;
 
-                // Create the highlighting box
                 const overlay = document.createElement('div');
                 overlay.id = 'justin-inspect-overlay';
                 overlay.style.position = 'fixed';
-                overlay.style.pointerEvents = 'none'; // Lets clicks pass through to the element
-                overlay.style.zIndex = '2147483647'; // Maximum possible z-index
-                overlay.style.backgroundColor = 'rgba(78, 201, 176, 0.3)'; // VS Code Green tint
-                overlay.style.border = '2px solid #4EC9B0';
+                overlay.style.pointerEvents = 'none'; 
+                overlay.style.zIndex = '2147483647'; 
+                overlay.style.backgroundColor = 'rgba(14, 165, 233, 0.2)'; 
+                overlay.style.border = '2px solid #0ea5e9';
                 overlay.style.transition = 'top 0.05s, left 0.05s, width 0.05s, height 0.05s';
                 document.body.appendChild(overlay);
 
-                // Make the box follow the mouse
                 const moveHandler = (e) => {
                     const target = e.target;
                     const rect = target.getBoundingClientRect();
@@ -271,12 +312,10 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                     overlay.style.height = rect.height + 'px';
                 };
 
-                // When they finally click an element
                 const clickHandler = (e) => {
-                    e.preventDefault(); // Stop links from actually opening
+                    e.preventDefault(); 
                     e.stopPropagation();
                     
-                    // Cleanup our mess
                     document.removeEventListener('mousemove', moveHandler);
                     document.removeEventListener('click', clickHandler, true);
                     overlay.remove();
@@ -284,42 +323,29 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
 
                     const target = e.target;
                     let htmlSnippet = target.outerHTML;
-                    
-                    // Cap the size so we don't blow up the AI token limit if they click the entire <body> tag
-                    if (htmlSnippet.length > 2000) {
-                        htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]';
-                    }
+                    if (htmlSnippet.length > 2000) { htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]'; }
 
-                    // Beam it back to the Side Panel!
                     chrome.runtime.sendMessage({ 
                         action: 'ELEMENT_PICKED', 
-                        data: `I clicked this element on the page. Look at my open files, find where this lives in the codebase, and tell me how to fix/edit it:\n\n\`\`\`html\n${htmlSnippet}\n\`\`\`` 
+                        data: `I clicked this element. Find where this lives in the codebase and tell me how to fix/edit it:\n\n\`\`\`html\n${htmlSnippet}\n\`\`\`` 
                     });
                 };
 
                 document.addEventListener('mousemove', moveHandler);
-                document.addEventListener('click', clickHandler, true); // True = capturing phase, intercepts early
+                document.addEventListener('click', clickHandler, true); 
             }
         });
 
-        // Reset the button visual after 2 seconds
         setTimeout(() => { inspectBtn.innerHTML = originalHtml; }, 2000);
-
-    } catch (error) { 
-        console.error("Inspect error:", error); 
-    }
+    } catch (error) {}
 });
 
-// --- NEW: LISTEN FOR THE ELEMENT DATA ---
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'ELEMENT_PICKED') {
-        // Automatically switch Justin's tool to 'Debug' mode
         switchTool('/debug');
-        // Drop the HTML snippet straight into the prompt box!
         document.getElementById('taskInput').value = message.data;
     }
 });
-
 
 document.getElementById('sendBtn').addEventListener('click', async () => {
   const taskText = document.getElementById('taskInput').value.trim();
@@ -328,7 +354,6 @@ document.getElementById('sendBtn').addEventListener('click', async () => {
   if (!taskText && activeCommand !== '/review') { alert("Please enter some details for Justin to work with."); return; }
 
   const fullPrompt = `${activeCommand} ${taskText}`.trim();
-
   conversationHistory.push({ role: 'user', content: fullPrompt });
   renderChat();
   document.getElementById('taskInput').value = ''; 
@@ -353,10 +378,14 @@ document.getElementById('sendBtn').addEventListener('click', async () => {
           alert("Error: " + (data.message || "Failed to get response"));
       }
   } catch (error) {
-      console.error(error);
-      alert("Error connecting to VS Code. Make sure Justin is awake on port 4891!");
+      alert("Error connecting to VS Code. Is your Sandbox running?");
   } finally {
-      sendBtn.disabled = false;
+      // --- THE FIX ---
+      // 1. Explicitly reset the button to 'Submit' and unlock it.
       sendBtn.innerText = "Submit";
+      sendBtn.disabled = false;
+      
+      // 2. Ping the server to double-check if it actually died during the request.
+      checkConnection(); 
   }
 });
