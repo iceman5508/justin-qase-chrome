@@ -1,8 +1,16 @@
 let activeCommand = '/ask'; 
 let conversationHistory = []; 
 let isConnected = false;
+let activeStreamController = null; 
 
-// --- THE HEARTBEAT MONITOR ---
+const NOTIFICATION_TIMEOUT = 2000; 
+
+// --- SVG Icons for Buttons ---
+const fileSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`;
+const zapSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
+const termSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
+
+// --- HEARTBEAT MONITOR ---
 async function checkConnection() {
     const statusDiv = document.getElementById('connectionStatus');
     const statusText = statusDiv.querySelector('.status-text');
@@ -15,45 +23,33 @@ async function checkConnection() {
                 isConnected = true;
                 statusDiv.classList.add('online');
                 statusText.innerText = 'Connected to VS Code';
-                // Only reset the text to "Submit" if it was stuck on a connection message
                 if (sendBtn.innerText === 'Connecting...' || sendBtn.innerText === 'Start VS Code Sandbox!') {
                     sendBtn.innerText = 'Submit';
                 }
                 sendBtn.disabled = false;
             }
-        } else {
-            throw new Error("Bad response");
-        }
+        } else { throw new Error("Bad response"); }
     } catch (error) {
         if (isConnected || sendBtn.innerText === 'Connecting...') {
             isConnected = false;
             statusDiv.classList.remove('online');
             statusText.innerText = 'Offline';
-            
-            // Only overwrite the text if Justin isn't actively thinking
-            if (sendBtn.innerText !== 'Justin is thinking...') {
-                sendBtn.innerText = 'Start VS Code Sandbox!';
-            }
+            if (sendBtn.innerText !== 'Stop talking...') sendBtn.innerText = 'Start VS Code Sandbox!';
             sendBtn.disabled = true;
         }
     }
 }
-
-// Check immediately, then every 3 seconds
 checkConnection();
 setInterval(checkConnection, 3000);
 
-// --- THEME LISTENER ---
+// --- THEME ENGINE ---
 function applyTheme(theme) {
     if (theme === 'light') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', 'dark');
 }
-
 chrome.storage.onChanged.addListener((changes) => {
     if (changes.justinTheme) applyTheme(changes.justinTheme.newValue);
 });
-
-// --- INIT: LOAD CHAT HISTORY & THEME ---
 document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.get(['justinHistory', 'justinTheme'], function(result) {
         applyTheme(result.justinTheme || 'dark'); 
@@ -78,7 +74,6 @@ function renderChat() {
         document.getElementById('responseHeader').style.display = 'none';
         return;
     }
-    
     document.getElementById('responseHeader').style.display = 'flex';
 
     conversationHistory.forEach(msg => {
@@ -102,78 +97,106 @@ function renderChat() {
         }
         box.appendChild(div);
     });
-    
     box.scrollTop = box.scrollHeight;
 }
 
+// --- BULLETPROOF MARKDOWN PARSER (XSS SECURED) ---
 function parseMarkdown(text) {
-    let html = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    
-    html = html.replace(/\[TERMINAL:\s*([^\]]+)\]/g, function(match, cmd) {
-        const cleanCmd = cmd.trim();
-        const encodedCmd = encodeURIComponent(cleanCmd);
-        const termSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
-        return `<div class="terminal-block">
-                    <div class="terminal-cmd">$ ${cleanCmd}</div>
-                    <button class="terminal-btn" data-cmd="${encodedCmd}">${termSvg} Stage in Terminal</button>
-                </div>`;
+    const rawHtml = DOMPurify.sanitize(marked.parse(text));
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(rawHtml, 'text/html');
+
+    doc.querySelectorAll('p').forEach(p => {
+        const termMatch = p.innerText.match(/\[TERMINAL:\s*([^\]]+)\]/);
+        if (termMatch) {
+            const cleanCmd = termMatch[1].trim();
+            const encodedCmd = encodeURIComponent(cleanCmd);
+            const div = document.createElement('div');
+            div.className = 'terminal-block';
+            div.innerHTML = `
+                <div class="terminal-cmd">$ ${cleanCmd}</div>
+                <button class="terminal-btn" data-cmd="${encodedCmd}">${termSvg} Stage in Terminal</button>
+            `;
+            p.replaceWith(div);
+        }
     });
 
-    html = html.replace(/\[FILE:\s*([^\]]+)\]\s*```(\w*)\n([\s\S]*?)```/g, function(match, filename, language, code) {
-        const rawCode = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    doc.querySelectorAll('pre').forEach(pre => {
+        const codeEl = pre.querySelector('code');
+        if (!codeEl) return;
+        
+        const rawCode = codeEl.innerText;
         const encodedCode = encodeURIComponent(rawCode);
-        const cleanFile = filename.trim();
-        const fileSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`;
-        const zapSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
-        const header = `
-            <div class="code-header">
-                <span style="display:flex; align-items:center; color: #fff;">${fileSvg} ${cleanFile}</span>
-                <button class="apply-file-btn" data-filename="${cleanFile}" data-code="${encodedCode}">
+        
+        let language = 'CODE';
+        codeEl.classList.forEach(cls => {
+            if (cls.startsWith('language-')) language = cls.replace('language-', '');
+        });
+
+        let prev = pre.previousElementSibling;
+        let filename = null;
+        if (prev && prev.tagName === 'P') {
+            const fileMatch = prev.innerText.match(/\[FILE:\s*([^\]]+)\]/);
+            if (fileMatch) {
+                filename = fileMatch[1].trim();
+                prev.remove(); 
+            }
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'code-block';
+        const header = document.createElement('div');
+        header.className = 'code-header';
+        
+        if (filename) {
+            header.innerHTML = `
+                <span style="display:flex; align-items:center; color: #fff;">${fileSvg} ${filename}</span>
+                <button class="apply-file-btn" data-filename="${filename}" data-code="${encodedCode}">
                     ${zapSvg} Apply
                 </button>
-            </div>`;
-        return `<div class="code-block">${header}<pre><code>${code}</code></pre></div>`;
+            `;
+        } else {
+            header.innerHTML = `
+                <span style="color: #fff; text-transform: uppercase;">${language}</span>
+                <button class="insert-btn" data-code="${encodedCode}">Insert</button>
+            `;
+        }
+        
+        wrapper.appendChild(header);
+        wrapper.appendChild(pre.cloneNode(true));
+        pre.replaceWith(wrapper);
     });
 
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, language, code) {
-        const langLabel = language ? `<span>${language}</span>` : '<span>CODE</span>';
-        const rawCode = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-        const encodedCode = encodeURIComponent(rawCode);
-        const header = `<div class="code-header"><span style="color: #fff;">${langLabel}</span><button class="insert-btn" data-code="${encodedCode}">Insert</button></div>`;
-        return `<div class="code-block">${header}<pre><code>${code}</code></pre></div>`;
-    });
-
-    html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-    html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-    html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-    html = html.replace(/^\s*[-*]\s+(.*$)/gim, '<li>$1</li>');
-    html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-    html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
-    return html;
+    return doc.body.innerHTML;
 }
 
-document.getElementById('responseBox').addEventListener('click', async (e) => {
+// --- ACTION BUTTON CONTROLLER ---
+async function sendToVSCode(payload, btn, loadingText, successText) {
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = loadingText;
+    try {
+        const response = await fetch('http://localhost:4891', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (response.ok) {
+            btn.innerHTML = successText;
+            btn.style.backgroundColor = '#10b981'; 
+            setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, NOTIFICATION_TIMEOUT);
+        } else { throw new Error("Failed"); }
+    } catch (error) {
+        btn.innerHTML = 'Error';
+        btn.style.backgroundColor = '#ef4444'; 
+        console.error("VS Code API Error:", error);
+    }
+}
+
+document.getElementById('responseBox').addEventListener('click', (e) => {
     const termBtn = e.target.closest('.terminal-btn');
     if (termBtn) {
         const cmdToRun = decodeURIComponent(termBtn.getAttribute('data-cmd'));
-        const originalHtml = termBtn.innerHTML;
-        termBtn.innerHTML = 'Staging...';
-        try {
-            const response = await fetch('http://localhost:4891', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: 'terminal', terminalCommand: cmdToRun })
-            });
-            if (response.ok) {
-                termBtn.innerHTML = 'Staged!';
-                termBtn.style.backgroundColor = '#10b981'; 
-                setTimeout(() => { termBtn.innerHTML = originalHtml; termBtn.style.backgroundColor = ''; }, 2000);
-            } else { throw new Error("Failed"); }
-        } catch (error) {
-            termBtn.innerHTML = 'Error';
-            termBtn.style.backgroundColor = '#ef4444'; 
-            alert("Failed to connect to VS Code.");
-        }
+        sendToVSCode({ command: 'terminal', terminalCommand: cmdToRun }, termBtn, 'Staging...', 'Staged!');
         return; 
     }
 
@@ -181,60 +204,25 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
     if (applyBtn) {
         const codeToInsert = decodeURIComponent(applyBtn.getAttribute('data-code'));
         const targetFile = applyBtn.getAttribute('data-filename');
-        const originalHtml = applyBtn.innerHTML;
-        applyBtn.innerHTML = 'Applying...';
-        try {
-            const response = await fetch('http://localhost:4891', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: 'apply_file', filename: targetFile, code: codeToInsert })
-            });
-            if (response.ok) {
-                applyBtn.innerHTML = 'File Saved!';
-                applyBtn.style.backgroundColor = '#10b981'; 
-                setTimeout(() => { applyBtn.innerHTML = originalHtml; applyBtn.style.backgroundColor = ''; }, 2000);
-            } else { throw new Error("Failed"); }
-        } catch (error) {
-            applyBtn.innerHTML = 'Error';
-            applyBtn.style.backgroundColor = '#ef4444'; 
-            alert("Failed to write file. Make sure VS Code is open to a workspace directory.");
-        }
+        sendToVSCode({ command: 'apply_file', filename: targetFile, code: codeToInsert }, applyBtn, 'Applying...', 'File Saved!');
         return;
     }
 
     if (e.target.classList.contains('insert-btn')) {
-        const codeToInsert = decodeURIComponent(e.target.getAttribute('data-code'));
         const btn = e.target;
-        const originalText = btn.innerText;
-        btn.innerText = 'Inserting...';
-        try {
-            const response = await fetch('http://localhost:4891', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: 'insert', code: codeToInsert })
-            });
-            if (response.ok) {
-                btn.innerText = 'Inserted!';
-                btn.style.backgroundColor = '#10b981'; 
-                setTimeout(() => { btn.innerText = originalText; btn.style.backgroundColor = ''; }, 2000);
-            } else { throw new Error("Failed"); }
-        } catch (error) {
-            btn.innerText = 'Error';
-            btn.style.backgroundColor = '#ef4444'; 
-            alert("Failed to insert code.");
-        }
+        const codeToInsert = decodeURIComponent(btn.getAttribute('data-code'));
+        sendToVSCode({ command: 'insert', code: codeToInsert }, btn, 'Inserting...', 'Inserted!');
         return;
     }
 
     const copyBtn = e.target.closest('.copy-btn');
     if (copyBtn) {
         const rawMd = decodeURIComponent(copyBtn.getAttribute('data-raw'));
-        try {
-            await navigator.clipboard.writeText(rawMd);
+        navigator.clipboard.writeText(rawMd).then(() => {
             const originalHTML = copyBtn.innerHTML;
             copyBtn.innerHTML = '<span style="color: #10b981;">Copied!</span>';
-            setTimeout(() => { copyBtn.innerHTML = originalHTML; }, 2000);
-        } catch (err) { alert("Failed to copy."); }
+            setTimeout(() => { copyBtn.innerHTML = originalHTML; }, NOTIFICATION_TIMEOUT);
+        }).catch(err => console.error("Clipboard error:", err));
     }
 });
 
@@ -252,11 +240,10 @@ function switchTool(commandStr) {
 }
 
 document.querySelectorAll('.tool-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        switchTool(e.target.getAttribute('data-cmd'));
-    });
+    btn.addEventListener('click', (e) => { switchTool(e.target.getAttribute('data-cmd')); });
 });
 
+// --- AUTO-READ TAB ---
 document.getElementById('scrapeBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -270,7 +257,7 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
                 if (jiraDesc) return `Ticket: ${document.title}\n\nDescription:\n${jiraDesc.innerText}`;
                 const adoDesc = document.querySelector('.work-item-form-main') || document.querySelector('.html-field');
                 if (adoDesc) return `Ticket: ${document.title}\n\nDescription:\n${adoDesc.innerText}`;
-                return `Ticket: ${document.title}\n\n(Could not automatically find the description. Please highlight and click 'Auto-Read' again!)`;
+                return `Ticket: ${document.title}\n\n(Could not find description. Please highlight and click 'Auto-Read' again!)`;
             }
         }, (results) => {
             if (results && results[0] && results[0].result) { document.getElementById('taskInput').value = results[0].result; }
@@ -278,6 +265,7 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
     } catch (error) {}
 });
 
+// --- THE ELEMENT PICKER (VISUAL DOM-TO-CODE ROUTING ENGINE) ---
 document.getElementById('inspectBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -300,12 +288,10 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                 overlay.style.zIndex = '2147483647'; 
                 overlay.style.backgroundColor = 'rgba(14, 165, 233, 0.2)'; 
                 overlay.style.border = '2px solid #0ea5e9';
-                overlay.style.transition = 'top 0.05s, left 0.05s, width 0.05s, height 0.05s';
                 document.body.appendChild(overlay);
 
                 const moveHandler = (e) => {
-                    const target = e.target;
-                    const rect = target.getBoundingClientRect();
+                    const rect = e.target.getBoundingClientRect();
                     overlay.style.top = rect.top + 'px';
                     overlay.style.left = rect.left + 'px';
                     overlay.style.width = rect.width + 'px';
@@ -321,13 +307,42 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                     overlay.remove();
                     window.__justinPicking = false;
 
-                    const target = e.target;
-                    let htmlSnippet = target.outerHTML;
+                    // Grab the Routing Context
+                    const currentUrl = window.location.href;
+                    const currentPath = window.location.pathname;
+
+                    // Sanitize the DOM Snippet
+                    let clone = e.target.cloneNode(true);
+                    clone.querySelectorAll('svg, path, circle, rect, polygon').forEach(el => {
+                        const span = document.createElement('span');
+                        span.innerText = '[SVG ICON REMOVED]';
+                        el.replaceWith(span);
+                    });
+                    clone.querySelectorAll('img').forEach(img => {
+                        if (img.src && img.src.startsWith('data:image')) img.setAttribute('src', '[BASE64 DATA REMOVED]');
+                    });
+                    clone.querySelectorAll('*').forEach(el => {
+                        if (el.hasAttribute('style') && el.getAttribute('style').length > 50) {
+                            el.setAttribute('style', '[INLINE STYLES REMOVED]');
+                        }
+                    });
+
+                    let htmlSnippet = clone.outerHTML;
                     if (htmlSnippet.length > 2000) { htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]'; }
 
+                    // Send payload with URL Context
                     chrome.runtime.sendMessage({ 
                         action: 'ELEMENT_PICKED', 
-                        data: `I clicked this element. Find where this lives in the codebase and tell me how to fix/edit it:\n\n\`\`\`html\n${htmlSnippet}\n\`\`\`` 
+                        data: `I clicked a visual element on my live web app. 
+                        
+Current URL: ${currentUrl}
+Current Route: ${currentPath}
+
+Using my Project Architecture Map, cross-reference this routing path with my directory structure to figure out which page component I am looking at. Then, look at the HTML snippet below and tell me exactly which file (and roughly what line or sub-component) I need to open to edit this element:
+
+\`\`\`html
+${htmlSnippet}
+\`\`\`` 
                     });
                 };
 
@@ -335,8 +350,7 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                 document.addEventListener('click', clickHandler, true); 
             }
         });
-
-        setTimeout(() => { inspectBtn.innerHTML = originalHtml; }, 2000);
+        setTimeout(() => { inspectBtn.innerHTML = originalHtml; }, NOTIFICATION_TIMEOUT);
     } catch (error) {}
 });
 
@@ -347,45 +361,87 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 });
 
+// --- THE STREAMING CLIENT ---
 document.getElementById('sendBtn').addEventListener('click', async () => {
-  const taskText = document.getElementById('taskInput').value.trim();
-  const sendBtn = document.getElementById('sendBtn');
+    const sendBtn = document.getElementById('sendBtn');
 
-  if (!taskText && activeCommand !== '/review') { alert("Please enter some details for Justin to work with."); return; }
+    if (sendBtn.innerText === 'Stop talking...') {
+        if (activeStreamController) {
+            activeStreamController.abort();
+            activeStreamController = null;
+        }
+        sendBtn.innerText = "Submit";
+        sendBtn.disabled = false;
+        return;
+    }
 
-  const fullPrompt = `${activeCommand} ${taskText}`.trim();
-  conversationHistory.push({ role: 'user', content: fullPrompt });
-  renderChat();
-  document.getElementById('taskInput').value = ''; 
+    const taskText = document.getElementById('taskInput').value.trim();
+    if (!taskText && activeCommand !== '/review') { alert("Please enter some details."); return; }
 
-  sendBtn.disabled = true;
-  sendBtn.innerText = "Justin is thinking...";
-  
-  try {
-      const response = await fetch('http://localhost:4891', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: fullPrompt, history: conversationHistory.slice(0, -1) })
-      });
+    const fullPrompt = `${activeCommand} ${taskText}`.trim();
+    conversationHistory.push({ role: 'user', content: fullPrompt });
+    conversationHistory.push({ role: 'assistant', content: "" });
+    const msgIndex = conversationHistory.length - 1;
+    
+    renderChat();
+    document.getElementById('taskInput').value = ''; 
 
-      const data = await response.json();
+    sendBtn.innerText = "Stop talking...";
+    activeStreamController = new AbortController(); 
 
-      if (response.ok && data.status === 'success') {
-          conversationHistory.push({ role: 'assistant', content: data.text });
-          renderChat();
-          chrome.storage.local.set({ justinHistory: conversationHistory });
-      } else {
-          alert("Error: " + (data.message || "Failed to get response"));
-      }
-  } catch (error) {
-      alert("Error connecting to VS Code. Is your Sandbox running?");
-  } finally {
-      // --- THE FIX ---
-      // 1. Explicitly reset the button to 'Submit' and unlock it.
-      sendBtn.innerText = "Submit";
-      sendBtn.disabled = false;
-      
-      // 2. Ping the server to double-check if it actually died during the request.
-      checkConnection(); 
-  }
+    try {
+        const response = await fetch('http://localhost:4891', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: fullPrompt, history: conversationHistory.slice(0, -2) }),
+            signal: activeStreamController.signal
+        });
+
+        if (!response.ok) throw new Error("Connection failed");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            
+            let boundary = buffer.indexOf('\n\n');
+            while (boundary !== -1) {
+                const message = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                
+                if (message.startsWith('data: ')) {
+                    const dataStr = message.slice(6);
+                    try {
+                        const data = JSON.parse(dataStr);
+                        if (data.type === 'chunk') {
+                            conversationHistory[msgIndex].content += data.text;
+                            renderChat(); 
+                        } else if (data.type === 'done') {
+                            chrome.storage.local.set({ justinHistory: conversationHistory });
+                        }
+                    } catch(e) { } 
+                }
+                boundary = buffer.indexOf('\n\n');
+            }
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            console.log('Fetch aborted by user.');
+            conversationHistory[msgIndex].content += "\n\n*[Interrupted by user]*";
+            renderChat();
+            chrome.storage.local.set({ justinHistory: conversationHistory });
+        } else {
+            console.error(error);
+        }
+    } finally {
+        activeStreamController = null;
+        sendBtn.innerText = "Submit";
+        sendBtn.disabled = false;
+        checkConnection(); 
+    }
 });
