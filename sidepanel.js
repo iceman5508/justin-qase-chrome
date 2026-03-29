@@ -55,7 +55,6 @@ function renderChat() {
 function parseMarkdown(text) {
     let html = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     
-    // --- NEW: CATCH [TERMINAL: CMD] ---
     html = html.replace(/\[TERMINAL:\s*([^\]]+)\]/g, function(match, cmd) {
         const cleanCmd = cmd.trim();
         const encodedCmd = encodeURIComponent(cleanCmd);
@@ -101,13 +100,11 @@ function parseMarkdown(text) {
 
 document.getElementById('responseBox').addEventListener('click', async (e) => {
     
-    // 1. Handle "Run in VS Code" Terminal Button
     const termBtn = e.target.closest('.terminal-btn');
     if (termBtn) {
         const cmdToRun = decodeURIComponent(termBtn.getAttribute('data-cmd'));
         const originalHtml = termBtn.innerHTML;
         termBtn.innerHTML = 'Running...';
-        
         try {
             const response = await fetch('http://localhost:4891', {
                 method: 'POST',
@@ -127,14 +124,12 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
         return; 
     }
 
-    // 2. Handle "Apply File" Button 
     const applyBtn = e.target.closest('.apply-file-btn');
     if (applyBtn) {
         const codeToInsert = decodeURIComponent(applyBtn.getAttribute('data-code'));
         const targetFile = applyBtn.getAttribute('data-filename');
         const originalHtml = applyBtn.innerHTML;
         applyBtn.innerHTML = 'Applying...';
-        
         try {
             const response = await fetch('http://localhost:4891', {
                 method: 'POST',
@@ -154,12 +149,10 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
         return;
     }
 
-    // 3. Handle Normal "Insert at Cursor" Button
     if (e.target.classList.contains('insert-btn')) {
         const codeToInsert = decodeURIComponent(e.target.getAttribute('data-code'));
         const btn = e.target;
         btn.innerText = 'Inserting...';
-        
         try {
             const response = await fetch('http://localhost:4891', {
                 method: 'POST',
@@ -179,7 +172,6 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
         return;
     }
 
-    // 4. Handle Copy MD
     const copyBtn = e.target.closest('.copy-btn');
     if (copyBtn) {
         const rawMd = decodeURIComponent(copyBtn.getAttribute('data-raw'));
@@ -188,22 +180,27 @@ document.getElementById('responseBox').addEventListener('click', async (e) => {
             const originalHTML = copyBtn.innerHTML;
             copyBtn.innerHTML = '<span style="color: #4CAF50;">Copied!</span>';
             setTimeout(() => { copyBtn.innerHTML = originalHTML; }, 2000);
-        } catch (err) {
-            alert("Failed to copy to clipboard.");
-        }
+        } catch (err) { alert("Failed to copy to clipboard."); }
     }
 });
 
+// Switch tool visually and logically
+function switchTool(commandStr) {
+    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+    const btnToActive = document.querySelector(`.tool-btn[data-cmd="${commandStr}"]`);
+    if (btnToActive) btnToActive.classList.add('active');
+    
+    activeCommand = commandStr;
+    const input = document.getElementById('taskInput');
+    if (activeCommand === '/review') input.placeholder = "(Optional) Tell Justin what specific file or issue to focus on...";
+    else if (activeCommand === '/debug') input.placeholder = "Paste your error log or describe the bug here...";
+    else if (activeCommand === '/story') input.placeholder = "Paste your Jira or Azure DevOps ticket here...";
+    else input.placeholder = "Ask Justin a general question or paste context here...";
+}
+
 document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-        e.target.classList.add('active');
-        activeCommand = e.target.getAttribute('data-cmd');
-        const input = document.getElementById('taskInput');
-        if (activeCommand === '/review') input.placeholder = "(Optional) Tell Justin what specific file or issue to focus on...";
-        else if (activeCommand === '/debug') input.placeholder = "Paste your error log or describe the bug here...";
-        else if (activeCommand === '/story') input.placeholder = "Paste your Jira or Azure DevOps ticket here...";
-        else input.placeholder = "Ask Justin a general question or paste context here...";
+        switchTool(e.target.getAttribute('data-cmd'));
     });
 });
 
@@ -230,6 +227,99 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
         });
     } catch (error) { console.error("Scraping error:", error); }
 });
+
+// --- NEW: THE ELEMENT PICKER LOGIC ---
+document.getElementById('inspectBtn').addEventListener('click', async () => {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url.startsWith('http')) { 
+            alert("Cannot inspect this system page."); 
+            return; 
+        }
+
+        // Change the button text so the user knows it's working
+        const inspectBtn = document.getElementById('inspectBtn');
+        const originalHtml = inspectBtn.innerHTML;
+        inspectBtn.innerHTML = `<span style="color: #fff; font-weight: bold;">Hover over the page!</span>`;
+
+        // Inject the tracking script into the active tab
+        chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+                // Prevent duplicate injections
+                if (window.__justinPicking) return;
+                window.__justinPicking = true;
+
+                // Create the highlighting box
+                const overlay = document.createElement('div');
+                overlay.id = 'justin-inspect-overlay';
+                overlay.style.position = 'fixed';
+                overlay.style.pointerEvents = 'none'; // Lets clicks pass through to the element
+                overlay.style.zIndex = '2147483647'; // Maximum possible z-index
+                overlay.style.backgroundColor = 'rgba(78, 201, 176, 0.3)'; // VS Code Green tint
+                overlay.style.border = '2px solid #4EC9B0';
+                overlay.style.transition = 'top 0.05s, left 0.05s, width 0.05s, height 0.05s';
+                document.body.appendChild(overlay);
+
+                // Make the box follow the mouse
+                const moveHandler = (e) => {
+                    const target = e.target;
+                    const rect = target.getBoundingClientRect();
+                    overlay.style.top = rect.top + 'px';
+                    overlay.style.left = rect.left + 'px';
+                    overlay.style.width = rect.width + 'px';
+                    overlay.style.height = rect.height + 'px';
+                };
+
+                // When they finally click an element
+                const clickHandler = (e) => {
+                    e.preventDefault(); // Stop links from actually opening
+                    e.stopPropagation();
+                    
+                    // Cleanup our mess
+                    document.removeEventListener('mousemove', moveHandler);
+                    document.removeEventListener('click', clickHandler, true);
+                    overlay.remove();
+                    window.__justinPicking = false;
+
+                    const target = e.target;
+                    let htmlSnippet = target.outerHTML;
+                    
+                    // Cap the size so we don't blow up the AI token limit if they click the entire <body> tag
+                    if (htmlSnippet.length > 2000) {
+                        htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]';
+                    }
+
+                    // Beam it back to the Side Panel!
+                    chrome.runtime.sendMessage({ 
+                        action: 'ELEMENT_PICKED', 
+                        data: `I clicked this element on the page. Look at my open files, find where this lives in the codebase, and tell me how to fix/edit it:\n\n\`\`\`html\n${htmlSnippet}\n\`\`\`` 
+                    });
+                };
+
+                document.addEventListener('mousemove', moveHandler);
+                document.addEventListener('click', clickHandler, true); // True = capturing phase, intercepts early
+            }
+        });
+
+        // Reset the button visual after 2 seconds
+        setTimeout(() => { inspectBtn.innerHTML = originalHtml; }, 2000);
+
+    } catch (error) { 
+        console.error("Inspect error:", error); 
+    }
+});
+
+// --- NEW: LISTEN FOR THE ELEMENT DATA ---
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'ELEMENT_PICKED') {
+        // Automatically switch Justin's tool to 'Debug' mode
+        switchTool('/debug');
+        // Drop the HTML snippet straight into the prompt box!
+        document.getElementById('taskInput').value = message.data;
+    }
+});
+
 
 document.getElementById('sendBtn').addEventListener('click', async () => {
   const taskText = document.getElementById('taskInput').value.trim();
