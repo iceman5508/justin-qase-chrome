@@ -10,47 +10,60 @@ const fileSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" str
 const zapSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
 const termSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
 
-// --- HEARTBEAT MONITOR ---
-async function checkConnection() {
-    const statusDiv = document.getElementById('connectionStatus');
-    const statusText = statusDiv.querySelector('.status-text');
-    const sendBtn = document.getElementById('sendBtn');
-    
-    try {
-        const response = await fetch('http://localhost:4891/ping', { method: 'GET' });
-        if (response.ok) {
-            if (!isConnected) {
-                isConnected = true;
-                statusDiv.classList.add('online');
-                statusText.innerText = 'Connected to VS Code';
-                if (sendBtn.innerText === 'Connecting...' || sendBtn.innerText === 'Start VS Code Sandbox!') {
-                    sendBtn.innerText = 'Submit';
-                }
+// --- 1. CONNECTION STATE MACHINE ---
+const ConnectionUI = {
+    update: (online) => {
+        const statusDiv = document.getElementById('connectionStatus');
+        const statusText = statusDiv?.querySelector('.status-text');
+        const sendBtn = document.getElementById('sendBtn');
+        
+        isConnected = online;
+
+        if (online) {
+            statusDiv?.classList.add('online');
+            if (statusText) statusText.innerText = 'Connected to VS Code';
+            if (sendBtn && !activeStreamController) {
+                sendBtn.innerText = 'Submit';
                 sendBtn.disabled = false;
             }
-        } else { throw new Error("Bad response"); }
-    } catch (error) {
-        if (isConnected || sendBtn.innerText === 'Connecting...') {
-            isConnected = false;
-            statusDiv.classList.remove('online');
-            statusText.innerText = 'Offline';
-            if (sendBtn.innerText !== 'Stop talking...') sendBtn.innerText = 'Start VS Code Sandbox!';
-            sendBtn.disabled = true;
+        } else {
+            statusDiv?.classList.remove('online');
+            if (statusText) statusText.innerText = 'Offline';
+            if (sendBtn && !activeStreamController) {
+                sendBtn.innerText = 'Start VS Code Sandbox!';
+                sendBtn.disabled = true;
+            }
         }
     }
-}
-checkConnection();
-setInterval(checkConnection, 3000);
+};
 
-// --- THEME ENGINE ---
+// Recursive heartbeat avoids overlapping requests and eliminates the need for setInterval
+async function monitorConnection() {
+    try {
+        const response = await fetch('http://localhost:4891/ping', { 
+            method: 'GET',
+            signal: AbortSignal.timeout(2000) 
+        });
+        ConnectionUI.update(response.ok);
+    } catch (e) {
+        ConnectionUI.update(false);
+    }
+    setTimeout(monitorConnection, 5000);
+}
+
+// --- 2. THEME ENGINE & INIT ---
 function applyTheme(theme) {
     if (theme === 'light') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', 'dark');
 }
+
 chrome.storage.onChanged.addListener((changes) => {
     if (changes.justinTheme) applyTheme(changes.justinTheme.newValue);
 });
+
 document.addEventListener('DOMContentLoaded', () => {
+    monitorConnection();
+
     chrome.storage.local.get(['justinHistory', 'justinTheme'], function(result) {
         applyTheme(result.justinTheme || 'dark'); 
         if (result.justinHistory && result.justinHistory.length > 0) {
@@ -66,6 +79,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
     renderChat();
 });
 
+// --- 3. RENDER ENGINE ---
 function renderChat() {
     const box = document.getElementById('responseBox');
     box.innerHTML = '';
@@ -93,14 +107,24 @@ function renderChat() {
             `;
             div.innerHTML = bubbleHeader + parseMarkdown(msg.content);
         } else {
-            div.innerText = msg.content;
+            // Clean Command Parsing for User messages
+            const commandLabels = { '/ask': 'Ask', '/review': 'Review', '/debug': 'Debug', '/story': 'Story' };
+            const cmdMatch = msg.content.match(/^(\/\w+)\s*/);
+            
+            if (cmdMatch && commandLabels[cmdMatch[1]]) {
+                const label = commandLabels[cmdMatch[1]];
+                const bodyText = msg.content.slice(cmdMatch[0].length).trim();
+                div.innerHTML = `<span class="cmd-badge">${label}</span>${bodyText ? `<span class="cmd-body">${bodyText}</span>` : ''}`;
+            } else {
+                div.innerText = msg.content;
+            }
         }
         box.appendChild(div);
     });
     box.scrollTop = box.scrollHeight;
 }
 
-// --- BULLETPROOF MARKDOWN PARSER (XSS SECURED) ---
+// --- 4. BULLETPROOF MARKDOWN PARSER (XSS SECURED) ---
 function parseMarkdown(text) {
     const rawHtml = DOMPurify.sanitize(marked.parse(text));
     const parser = new DOMParser();
@@ -170,7 +194,7 @@ function parseMarkdown(text) {
     return doc.body.innerHTML;
 }
 
-// --- ACTION BUTTON CONTROLLER ---
+// --- 5. ACTION BUTTON CONTROLLER ---
 async function sendToVSCode(payload, btn, loadingText, successText) {
     const originalHtml = btn.innerHTML;
     btn.innerHTML = loadingText;
@@ -188,6 +212,7 @@ async function sendToVSCode(payload, btn, loadingText, successText) {
     } catch (error) {
         btn.innerHTML = 'Error';
         btn.style.backgroundColor = '#ef4444'; 
+        setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, NOTIFICATION_TIMEOUT);
         console.error("VS Code API Error:", error);
     }
 }
@@ -226,6 +251,7 @@ document.getElementById('responseBox').addEventListener('click', (e) => {
     }
 });
 
+// --- 6. TOOLS & SCRAPERS ---
 function switchTool(commandStr) {
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
     const btnToActive = document.querySelector(`.tool-btn[data-cmd="${commandStr}"]`);
@@ -243,7 +269,6 @@ document.querySelectorAll('.tool-btn').forEach(btn => {
     btn.addEventListener('click', (e) => { switchTool(e.target.getAttribute('data-cmd')); });
 });
 
-// --- AUTO-READ TAB ---
 document.getElementById('scrapeBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -265,7 +290,6 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
     } catch (error) {}
 });
 
-// --- THE ELEMENT PICKER (VISUAL DOM-TO-CODE ROUTING ENGINE) ---
 document.getElementById('inspectBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -307,11 +331,9 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                     overlay.remove();
                     window.__justinPicking = false;
 
-                    // Grab the Routing Context
                     const currentUrl = window.location.href;
                     const currentPath = window.location.pathname;
 
-                    // Sanitize the DOM Snippet
                     let clone = e.target.cloneNode(true);
                     clone.querySelectorAll('svg, path, circle, rect, polygon').forEach(el => {
                         const span = document.createElement('span');
@@ -330,7 +352,6 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                     let htmlSnippet = clone.outerHTML;
                     if (htmlSnippet.length > 2000) { htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]'; }
 
-                    // Send payload with URL Context
                     chrome.runtime.sendMessage({ 
                         action: 'ELEMENT_PICKED', 
                         data: `I clicked a visual element on my live web app. 
@@ -361,7 +382,7 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 });
 
-// --- THE STREAMING CLIENT ---
+// --- 7. STREAMING CLIENT ---
 document.getElementById('sendBtn').addEventListener('click', async () => {
     const sendBtn = document.getElementById('sendBtn');
 
@@ -387,7 +408,21 @@ document.getElementById('sendBtn').addEventListener('click', async () => {
     document.getElementById('taskInput').value = ''; 
 
     sendBtn.innerText = "Stop talking...";
-    activeStreamController = new AbortController(); 
+    activeStreamController = new AbortController();
+
+    const streamTimeout = setTimeout(() => {
+        if (activeStreamController) {
+            activeStreamController.abort();
+            activeStreamController = null;
+        }
+        conversationHistory[msgIndex].content += "\n\n*[Timed out waiting for VS Code chat response]*";
+        renderChat();
+        chrome.storage.local.set({ justinHistory: conversationHistory });
+        if (isConnected) {
+            sendBtn.innerText = "Submit";
+            sendBtn.disabled = false;
+        }
+    }, 90000);
 
     try {
         const response = await fetch('http://localhost:4891', {
@@ -398,6 +433,7 @@ document.getElementById('sendBtn').addEventListener('click', async () => {
         });
 
         if (!response.ok) throw new Error("Connection failed");
+        ConnectionUI.update(true);
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
@@ -436,12 +472,18 @@ document.getElementById('sendBtn').addEventListener('click', async () => {
             renderChat();
             chrome.storage.local.set({ justinHistory: conversationHistory });
         } else {
+            ConnectionUI.update(false);
             console.error(error);
         }
     } finally {
+        clearTimeout(streamTimeout);
         activeStreamController = null;
-        sendBtn.innerText = "Submit";
-        sendBtn.disabled = false;
-        checkConnection(); 
+        if (isConnected) {
+            sendBtn.innerText = "Submit";
+            sendBtn.disabled = false;
+        } else {
+            sendBtn.innerText = "Start VS Code Sandbox!";
+            sendBtn.disabled = true;
+        }
     }
 });
