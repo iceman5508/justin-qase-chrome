@@ -2,7 +2,6 @@
 <html data-theme="dark">
 <head>
   <style>
-    /* ... [Keep the exact same CSS variables and styles from the previous step] ... */
     :root {
       --bg-main: #f9fafb; --bg-panel: #ffffff; --bg-input: #ffffff; --text-main: #111827; --text-muted: #6b7280; --border-color: #e5e7eb;
       --accent-blue: #0ea5e9; --accent-blue-hover: #0284c7; --accent-green: #10b981; --accent-green-hover: #059669; --accent-red: #ef4444; --accent-red-hover: #dc2626;
@@ -13,21 +12,8 @@
       --accent-blue: #0e639c; --accent-blue-hover: #1177bb; --chat-ai-bg: #252526; --chat-user-bg: #0e639c; --shadow-sm: 0 1px 2px 0 rgba(0,0,0,0.5); --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.4);
     }
 
-    body { 
-    font-family: system-ui, -apple-system, sans-serif; 
-    padding: 16px; 
-    background-color: var(--bg-main); 
-    color: var(--text-main); 
-    margin: 0; 
-    display: flex; 
-    flex-direction: column; 
-    height: 100vh; 
-    box-sizing: border-box; 
-    transition: background-color 0.3s, color 0.3s; 
-    overflow: hidden; /* <--- THIS PREVENTS THE BODY FROM SCROLLING */
-}
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 16px; background-color: var(--bg-main); color: var(--text-main); margin: 0; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; transition: background-color 0.3s, color 0.3s; overflow: hidden; }
     
-    /* --- NEW: APP HEADER WITH HEARTBEAT --- */
     .app-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
     h2.title { margin: 0; font-size: 18px; color: var(--text-main); font-weight: 700; }
     .status-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 4px 8px; background: var(--bg-input); border-radius: 12px; border: 1px solid var(--border-color); }

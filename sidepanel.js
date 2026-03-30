@@ -1,35 +1,35 @@
 let activeCommand = '/ask'; 
 let conversationHistory = []; 
 let isConnected = false;
-let activeStreamController = null; 
+let sockets = new Map(); 
+let activeSocketPort = null; 
 
 const NOTIFICATION_TIMEOUT = 2000; 
 
-// --- SVG Icons for Buttons ---
 const fileSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`;
 const zapSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`;
 const termSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
 
-// --- 1. CONNECTION STATE MACHINE ---
 const ConnectionUI = {
-    update: (online) => {
+    update: () => {
+        const isOnline = sockets.size > 0;
         const statusDiv = document.getElementById('connectionStatus');
         const statusText = statusDiv?.querySelector('.status-text');
         const sendBtn = document.getElementById('sendBtn');
         
-        isConnected = online;
+        isConnected = isOnline;
 
-        if (online) {
+        if (isOnline) {
             statusDiv?.classList.add('online');
-            if (statusText) statusText.innerText = 'Connected to VS Code';
-            if (sendBtn && !activeStreamController) {
+            if (statusText) statusText.innerText = `Connected (${sockets.size} Workspace${sockets.size > 1 ? 's' : ''})`;
+            if (sendBtn && sendBtn.innerText !== 'Stop talking...') {
                 sendBtn.innerText = 'Submit';
                 sendBtn.disabled = false;
             }
         } else {
             statusDiv?.classList.remove('online');
             if (statusText) statusText.innerText = 'Offline';
-            if (sendBtn && !activeStreamController) {
+            if (sendBtn && sendBtn.innerText !== 'Stop talking...') {
                 sendBtn.innerText = 'Start VS Code Sandbox!';
                 sendBtn.disabled = true;
             }
@@ -37,21 +37,66 @@ const ConnectionUI = {
     }
 };
 
-// Recursive heartbeat avoids overlapping requests and eliminates the need for setInterval
-async function monitorConnection() {
-    try {
-        const response = await fetch('http://localhost:4891/ping', { 
-            method: 'GET',
-            signal: AbortSignal.timeout(2000) 
-        });
-        ConnectionUI.update(response.ok);
-    } catch (e) {
-        ConnectionUI.update(false);
-    }
-    setTimeout(monitorConnection, 5000);
+function connectToMesh(port) {
+    if (sockets.has(port)) return;
+
+    let ws = new WebSocket(`ws://localhost:${port}`);
+    
+    ws.onopen = () => { 
+        sockets.set(port, ws);
+        ConnectionUI.update(); 
+    };
+
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'window_focused' && data.focused) {
+            activeSocketPort = port;
+            return; 
+        }
+
+        if (port !== activeSocketPort && activeSocketPort !== null) return;
+
+        const msgIndex = conversationHistory.length - 1;
+
+        if (data.type === 'progress') {
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.innerText = `[ ${data.text} ]`;
+        } 
+        else if (data.type === 'chunk') {
+            conversationHistory[msgIndex].content += data.text;
+            renderChat();
+        } 
+        else if (data.type === 'button') {
+            const encodedCmd = encodeURIComponent(data.cmd);
+            const btnHtml = `\n\n<div class="terminal-block"><div class="terminal-cmd">$ ${data.cmd}</div><button class="terminal-btn" data-cmd="${encodedCmd}">${termSvg} ${data.label}</button></div>\n\n`;
+            conversationHistory[msgIndex].content += btnHtml;
+            renderChat();
+        }
+        else if (data.type === 'done') {
+            chrome.storage.local.set({ justinHistory: conversationHistory });
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.innerText = "Submit";
+            sendBtn.disabled = false;
+        }
+    };
+
+    ws.onclose = () => {
+        sockets.delete(port);
+        if (activeSocketPort === port) activeSocketPort = null;
+        ConnectionUI.update();
+        setTimeout(() => connectToMesh(port), 3000); 
+    };
+
+    ws.onerror = () => { ws.close(); };
 }
 
-// --- 2. THEME ENGINE & INIT ---
+function bootMesh() {
+    for (let i = 4891; i <= 4895; i++) {
+        connectToMesh(i);
+    }
+}
+
 function applyTheme(theme) {
     if (theme === 'light') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', 'dark');
@@ -62,8 +107,7 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-    monitorConnection();
-
+    bootMesh(); 
     chrome.storage.local.get(['justinHistory', 'justinTheme'], function(result) {
         applyTheme(result.justinTheme || 'dark'); 
         if (result.justinHistory && result.justinHistory.length > 0) {
@@ -79,7 +123,6 @@ document.getElementById('clearBtn').addEventListener('click', () => {
     renderChat();
 });
 
-// --- 3. RENDER ENGINE ---
 function renderChat() {
     const box = document.getElementById('responseBox');
     box.innerHTML = '';
@@ -107,7 +150,6 @@ function renderChat() {
             `;
             div.innerHTML = bubbleHeader + parseMarkdown(msg.content);
         } else {
-            // Clean Command Parsing for User messages
             const commandLabels = { '/ask': 'Ask', '/review': 'Review', '/debug': 'Debug', '/story': 'Story' };
             const cmdMatch = msg.content.match(/^(\/\w+)\s*/);
             
@@ -124,7 +166,6 @@ function renderChat() {
     box.scrollTop = box.scrollHeight;
 }
 
-// --- 4. BULLETPROOF MARKDOWN PARSER (XSS SECURED) ---
 function parseMarkdown(text) {
     const rawHtml = DOMPurify.sanitize(marked.parse(text));
     const parser = new DOMParser();
@@ -161,10 +202,7 @@ function parseMarkdown(text) {
         let filename = null;
         if (prev && prev.tagName === 'P') {
             const fileMatch = prev.innerText.match(/\[FILE:\s*([^\]]+)\]/);
-            if (fileMatch) {
-                filename = fileMatch[1].trim();
-                prev.remove(); 
-            }
+            if (fileMatch) { filename = fileMatch[1].trim(); prev.remove(); }
         }
 
         const wrapper = document.createElement('div');
@@ -173,17 +211,9 @@ function parseMarkdown(text) {
         header.className = 'code-header';
         
         if (filename) {
-            header.innerHTML = `
-                <span style="display:flex; align-items:center; color: #fff;">${fileSvg} ${filename}</span>
-                <button class="apply-file-btn" data-filename="${filename}" data-code="${encodedCode}">
-                    ${zapSvg} Apply
-                </button>
-            `;
+            header.innerHTML = `<span style="display:flex; align-items:center; color: #fff;">${fileSvg} ${filename}</span><button class="apply-file-btn" data-filename="${filename}" data-code="${encodedCode}">${zapSvg} Apply</button>`;
         } else {
-            header.innerHTML = `
-                <span style="color: #fff; text-transform: uppercase;">${language}</span>
-                <button class="insert-btn" data-code="${encodedCode}">Insert</button>
-            `;
+            header.innerHTML = `<span style="color: #fff; text-transform: uppercase;">${language}</span><button class="insert-btn" data-code="${encodedCode}">Insert</button>`;
         }
         
         wrapper.appendChild(header);
@@ -194,64 +224,44 @@ function parseMarkdown(text) {
     return doc.body.innerHTML;
 }
 
-// --- 5. ACTION BUTTON CONTROLLER ---
-async function sendToVSCode(payload, btn, loadingText, successText) {
+function sendToVSCode(payload, btn, loadingText, successText) {
     const originalHtml = btn.innerHTML;
     btn.innerHTML = loadingText;
-    try {
-        const response = await fetch('http://localhost:4891', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (response.ok) {
-            btn.innerHTML = successText;
-            btn.style.backgroundColor = '#10b981'; 
-            setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, NOTIFICATION_TIMEOUT);
-        } else { throw new Error("Failed"); }
-    } catch (error) {
+    
+    let targetWs = sockets.get(activeSocketPort);
+    if (!targetWs && sockets.size > 0) targetWs = sockets.values().next().value; 
+    
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+        targetWs.send(JSON.stringify(payload));
+        btn.innerHTML = successText;
+        btn.style.backgroundColor = '#10b981'; 
+        setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, 2000);
+    } else {
         btn.innerHTML = 'Error';
         btn.style.backgroundColor = '#ef4444'; 
-        setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, NOTIFICATION_TIMEOUT);
-        console.error("VS Code API Error:", error);
+        setTimeout(() => { btn.innerHTML = originalHtml; btn.style.backgroundColor = ''; }, 2000);
     }
 }
 
 document.getElementById('responseBox').addEventListener('click', (e) => {
     const termBtn = e.target.closest('.terminal-btn');
-    if (termBtn) {
-        const cmdToRun = decodeURIComponent(termBtn.getAttribute('data-cmd'));
-        sendToVSCode({ command: 'terminal', terminalCommand: cmdToRun }, termBtn, 'Staging...', 'Staged!');
-        return; 
-    }
+    if (termBtn) return sendToVSCode({ action: 'execute_terminal', cmd: decodeURIComponent(termBtn.getAttribute('data-cmd')) }, termBtn, 'Staging...', 'Staged!');
 
     const applyBtn = e.target.closest('.apply-file-btn');
-    if (applyBtn) {
-        const codeToInsert = decodeURIComponent(applyBtn.getAttribute('data-code'));
-        const targetFile = applyBtn.getAttribute('data-filename');
-        sendToVSCode({ command: 'apply_file', filename: targetFile, code: codeToInsert }, applyBtn, 'Applying...', 'File Saved!');
-        return;
-    }
+    if (applyBtn) return sendToVSCode({ action: 'apply_file', filename: applyBtn.getAttribute('data-filename'), code: decodeURIComponent(applyBtn.getAttribute('data-code')) }, applyBtn, 'Applying...', 'File Saved!');
 
-    if (e.target.classList.contains('insert-btn')) {
-        const btn = e.target;
-        const codeToInsert = decodeURIComponent(btn.getAttribute('data-code'));
-        sendToVSCode({ command: 'insert', code: codeToInsert }, btn, 'Inserting...', 'Inserted!');
-        return;
-    }
+    if (e.target.classList.contains('insert-btn')) return sendToVSCode({ action: 'insert', code: decodeURIComponent(e.target.getAttribute('data-code')) }, e.target, 'Inserting...', 'Inserted!');
 
     const copyBtn = e.target.closest('.copy-btn');
     if (copyBtn) {
-        const rawMd = decodeURIComponent(copyBtn.getAttribute('data-raw'));
-        navigator.clipboard.writeText(rawMd).then(() => {
+        navigator.clipboard.writeText(decodeURIComponent(copyBtn.getAttribute('data-raw'))).then(() => {
             const originalHTML = copyBtn.innerHTML;
             copyBtn.innerHTML = '<span style="color: #10b981;">Copied!</span>';
             setTimeout(() => { copyBtn.innerHTML = originalHTML; }, NOTIFICATION_TIMEOUT);
-        }).catch(err => console.error("Clipboard error:", err));
+        });
     }
 });
 
-// --- 6. TOOLS & SCRAPERS ---
 function switchTool(commandStr) {
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
     const btnToActive = document.querySelector(`.tool-btn[data-cmd="${commandStr}"]`);
@@ -261,7 +271,7 @@ function switchTool(commandStr) {
     const input = document.getElementById('taskInput');
     if (activeCommand === '/review') input.placeholder = "(Optional) Tell Justin what specific file or issue to focus on...";
     else if (activeCommand === '/debug') input.placeholder = "Paste your error log or describe the bug here...";
-    else if (activeCommand === '/story') input.placeholder = "Paste your Jira or Azure DevOps ticket here...";
+    else if (activeCommand === '/story') input.placeholder = "Paste your ticket description here...";
     else input.placeholder = "Ask Justin a general question or paste context here...";
 }
 
@@ -273,6 +283,47 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab || !tab.url) return;
+
+        if (activeCommand === '/review') {
+            const isGithubPR = tab.url.match(/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
+            const isKallitheaPR = tab.url.includes('/pull-request/'); 
+            
+            if (isGithubPR || isKallitheaPR) {
+                const diffExtension = isGithubPR ? '.diff' : '.patch'; 
+                const originalHtml = document.getElementById('scrapeBtn').innerHTML;
+                document.getElementById('scrapeBtn').innerHTML = 'Fetching Diff...';
+
+                chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    args: [diffExtension],
+                    func: async (ext) => {
+                        try {
+                            const cleanUrl = window.location.href.split('?')[0].split('#')[0];
+                            const response = await fetch(cleanUrl + ext, { credentials: 'same-origin' });
+                            
+                            if (response.ok) {
+                                return await response.text();
+                            }
+                            return null;
+                        } catch (e) {
+                            return null;
+                        }
+                    }
+                }, (results) => {
+                    document.getElementById('scrapeBtn').innerHTML = originalHtml;
+                    
+                    if (results && results[0] && results[0].result) {
+                        const rawDiff = results[0].result;
+                        let truncatedDiff = rawDiff.length > 25000 ? rawDiff.substring(0, 25000) + '\n...[DIFF TRUNCATED]' : rawDiff;
+                        document.getElementById('taskInput').value = `Please review these uncommitted changes from my PR:\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\``;
+                    } else {
+                        document.getElementById('taskInput').value = `Review this PR: ${tab.url}`;
+                    }
+                });
+                return;
+            }
+        }
+
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
@@ -284,9 +335,7 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
                 if (adoDesc) return `Ticket: ${document.title}\n\nDescription:\n${adoDesc.innerText}`;
                 return `Ticket: ${document.title}\n\n(Could not find description. Please highlight and click 'Auto-Read' again!)`;
             }
-        }, (results) => {
-            if (results && results[0] && results[0].result) { document.getElementById('taskInput').value = results[0].result; }
-        });
+        }, (results) => { if (results && results[0] && results[0].result) document.getElementById('taskInput').value = results[0].result; });
     } catch (error) {}
 });
 
@@ -306,64 +355,43 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                 window.__justinPicking = true;
 
                 const overlay = document.createElement('div');
-                overlay.id = 'justin-inspect-overlay';
-                overlay.style.position = 'fixed';
-                overlay.style.pointerEvents = 'none'; 
-                overlay.style.zIndex = '2147483647'; 
-                overlay.style.backgroundColor = 'rgba(14, 165, 233, 0.2)'; 
-                overlay.style.border = '2px solid #0ea5e9';
+                overlay.style = "position:fixed;pointer-events:none;z-index:2147483647;background:rgba(14,165,233,0.2);border:2px solid #0ea5e9;";
                 document.body.appendChild(overlay);
 
                 const moveHandler = (e) => {
-                    const rect = e.target.getBoundingClientRect();
-                    overlay.style.top = rect.top + 'px';
-                    overlay.style.left = rect.left + 'px';
-                    overlay.style.width = rect.width + 'px';
-                    overlay.style.height = rect.height + 'px';
+                    const r = e.target.getBoundingClientRect();
+                    overlay.style.top=r.top+'px'; overlay.style.left=r.left+'px'; overlay.style.width=r.width+'px'; overlay.style.height=r.height+'px';
                 };
 
                 const clickHandler = (e) => {
-                    e.preventDefault(); 
-                    e.stopPropagation();
+                    e.preventDefault(); e.stopPropagation();
+                    document.removeEventListener('mousemove', moveHandler); document.removeEventListener('click', clickHandler, true);
+                    overlay.remove(); window.__justinPicking = false;
+
+                    let target = e.target;
+                    let frameworkComponent = "Unknown Component";
                     
-                    document.removeEventListener('mousemove', moveHandler);
-                    document.removeEventListener('click', clickHandler, true);
-                    overlay.remove();
-                    window.__justinPicking = false;
-
-                    const currentUrl = window.location.href;
-                    const currentPath = window.location.pathname;
-
-                    let clone = e.target.cloneNode(true);
-                    clone.querySelectorAll('svg, path, circle, rect, polygon').forEach(el => {
-                        const span = document.createElement('span');
-                        span.innerText = '[SVG ICON REMOVED]';
-                        el.replaceWith(span);
-                    });
-                    clone.querySelectorAll('img').forEach(img => {
-                        if (img.src && img.src.startsWith('data:image')) img.setAttribute('src', '[BASE64 DATA REMOVED]');
-                    });
-                    clone.querySelectorAll('*').forEach(el => {
-                        if (el.hasAttribute('style') && el.getAttribute('style').length > 50) {
-                            el.setAttribute('style', '[INLINE STYLES REMOVED]');
+                    let curr = target;
+                    while (curr && curr !== document.body) {
+                        if (curr.__vueParentComponent) {
+                            frameworkComponent = curr.__vueParentComponent.type.__file || curr.__vueParentComponent.type.name || "Vue Component";
+                            break;
                         }
-                    });
+                        const reactKey = Object.keys(curr).find(k => k.startsWith('__reactFiber$'));
+                        if (reactKey && curr[reactKey].return?.elementType?.name) {
+                            frameworkComponent = curr[reactKey].return.elementType.name;
+                            break;
+                        }
+                        curr = curr.parentElement;
+                    }
 
-                    let htmlSnippet = clone.outerHTML;
-                    if (htmlSnippet.length > 2000) { htmlSnippet = htmlSnippet.substring(0, 2000) + '\n...[TRUNCATED]'; }
+                    let clone = target.cloneNode(true);
+                    clone.querySelectorAll('svg, path').forEach(el => el.replaceWith('[SVG]'));
+                    let htmlSnippet = clone.outerHTML.substring(0, 1000);
 
                     chrome.runtime.sendMessage({ 
                         action: 'ELEMENT_PICKED', 
-                        data: `I clicked a visual element on my live web app. 
-                        
-Current URL: ${currentUrl}
-Current Route: ${currentPath}
-
-Using my Project Architecture Map, cross-reference this routing path with my directory structure to figure out which page component I am looking at. Then, look at the HTML snippet below and tell me exactly which file (and roughly what line or sub-component) I need to open to edit this element:
-
-\`\`\`html
-${htmlSnippet}
-\`\`\`` 
+                        data: `/debug I clicked an element inside what appears to be the \`${frameworkComponent}\` component.\n\nHere is the raw HTML:\n\`\`\`html\n${htmlSnippet}\n\`\`\`\n\nUse your \`justin_search_workspace\` or \`justin_read_file\` tools to figure out how to edit this element.` 
                     });
                 };
 
@@ -382,108 +410,31 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 });
 
-// --- 7. STREAMING CLIENT ---
 document.getElementById('sendBtn').addEventListener('click', async () => {
     const sendBtn = document.getElementById('sendBtn');
-
-    if (sendBtn.innerText === 'Stop talking...') {
-        if (activeStreamController) {
-            activeStreamController.abort();
-            activeStreamController = null;
-        }
-        sendBtn.innerText = "Submit";
-        sendBtn.disabled = false;
-        return;
-    }
-
     const taskText = document.getElementById('taskInput').value.trim();
     if (!taskText && activeCommand !== '/review') { alert("Please enter some details."); return; }
 
+    if (activeCommand === '/review' && taskText.includes('github.com') && !taskText.includes('/pull/')) {
+        alert("To review remote code, please provide a direct link to a Pull Request (e.g., .../pull/1), not the base repository.");
+        return;
+    }
+
     const fullPrompt = `${activeCommand} ${taskText}`.trim();
-    conversationHistory.push({ role: 'user', content: fullPrompt });
-    conversationHistory.push({ role: 'assistant', content: "" });
-    const msgIndex = conversationHistory.length - 1;
-    
+    conversationHistory.push({ role: 'user', content: fullPrompt }, { role: 'assistant', content: "" });
     renderChat();
+    
     document.getElementById('taskInput').value = ''; 
+    sendBtn.innerText = "Triggering VS Code...";
+    sendBtn.disabled = true;
 
-    sendBtn.innerText = "Stop talking...";
-    activeStreamController = new AbortController();
+    let targetWs = sockets.get(activeSocketPort);
+    if (!targetWs && sockets.size > 0) targetWs = sockets.values().next().value; 
 
-    const streamTimeout = setTimeout(() => {
-        if (activeStreamController) {
-            activeStreamController.abort();
-            activeStreamController = null;
-        }
-        conversationHistory[msgIndex].content += "\n\n*[Timed out waiting for VS Code chat response]*";
-        renderChat();
-        chrome.storage.local.set({ justinHistory: conversationHistory });
-        if (isConnected) {
-            sendBtn.innerText = "Submit";
-            sendBtn.disabled = false;
-        }
-    }, 90000);
-
-    try {
-        const response = await fetch('http://localhost:4891', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: fullPrompt, history: conversationHistory.slice(0, -2) }),
-            signal: activeStreamController.signal
-        });
-
-        if (!response.ok) throw new Error("Connection failed");
-        ConnectionUI.update(true);
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            buffer += decoder.decode(value, { stream: true });
-            
-            let boundary = buffer.indexOf('\n\n');
-            while (boundary !== -1) {
-                const message = buffer.slice(0, boundary);
-                buffer = buffer.slice(boundary + 2);
-                
-                if (message.startsWith('data: ')) {
-                    const dataStr = message.slice(6);
-                    try {
-                        const data = JSON.parse(dataStr);
-                        if (data.type === 'chunk') {
-                            conversationHistory[msgIndex].content += data.text;
-                            renderChat(); 
-                        } else if (data.type === 'done') {
-                            chrome.storage.local.set({ justinHistory: conversationHistory });
-                        }
-                    } catch(e) { } 
-                }
-                boundary = buffer.indexOf('\n\n');
-            }
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            console.log('Fetch aborted by user.');
-            conversationHistory[msgIndex].content += "\n\n*[Interrupted by user]*";
-            renderChat();
-            chrome.storage.local.set({ justinHistory: conversationHistory });
-        } else {
-            ConnectionUI.update(false);
-            console.error(error);
-        }
-    } finally {
-        clearTimeout(streamTimeout);
-        activeStreamController = null;
-        if (isConnected) {
-            sendBtn.innerText = "Submit";
-            sendBtn.disabled = false;
-        } else {
-            sendBtn.innerText = "Start VS Code Sandbox!";
-            sendBtn.disabled = true;
-        }
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+        targetWs.send(JSON.stringify({ action: 'prompt', text: fullPrompt }));
+    } else { 
+        alert("VS Code is not connected."); 
+        sendBtn.innerText = "Start VS Code Sandbox!"; 
     }
 });
