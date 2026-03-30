@@ -299,7 +299,14 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
                     func: async (ext) => {
                         try {
                             const cleanUrl = window.location.href.split('?')[0].split('#')[0];
-                            const response = await fetch(cleanUrl + ext, { credentials: 'same-origin' });
+                          const response = await fetch(cleanUrl + ext, { 
+                                credentials: 'include',
+                                headers: {
+                                    // Tell GitHub we specifically want the text diff, NOT the HTML page
+                                    'Accept': 'application/vnd.github.v3.diff, text/plain, */*',
+                                    'Cache-Control': 'no-cache'
+                                }
+                            });
                             
                             if (response.ok) {
                                 return await response.text();

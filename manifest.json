@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp3fsN8waV3YRKkDgiATBJXHnD+S0oubpYmFcpzG8qgvALlhJAOCUzO3aCaXFVjSRPYQOm87pBqcl+NyrKsMW/l608QMH7EC+GVbs7SKP1UYf6lFjwydjR86gn0eoCTpfVL9/tZVKOACNzLVrZwh1uAgBq3J3bFqYN+Ig23pAqhUYbBItLB4/24uysHg0Ww0Dko5WUkSBu2Cz8lkwZXUiLG5locDF4jjVoXx5QyTMwc7zQdBGaF4qYtec5pxinDL0sUgXN76zmlIFga6ocIQgG2pvGbYVNjWsBKVCdW9Y360bodia5y++aEyzGC78U5cRj2TeYDXBbPANfJspgItG5QIDAQAB",
   "name": "Justin-Qase Chrome Bridge",
   "version": "1.0",
   "description": "Sends tickets and PRs directly to Justin in VS Code.",

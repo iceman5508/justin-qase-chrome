@@ -1,0 +1,50 @@
+[
+  {
+    "id": "use-strict-equality",
+    "description": "Use strict equality (===) instead of loose equality (==).",
+    "searchRegex": "==(?!=)",
+    "replaceString": "===",
+    "severity": "Error",
+    "languages": [
+      "javascript",
+      "typescript",
+      "php"
+    ]
+  },
+  {
+    "id": "no-space-if-paren",
+    "description": "No space between 'if' and '('.",
+    "searchRegex": "\\bif\\s+\\(",
+    "replaceString": "if(",
+    "severity": "Error",
+    "languages": [
+      "javascript",
+      "typescript",
+      "php",
+      "python"
+    ]
+  },
+  {
+    "id": "space-after-paren-before-brace",
+    "description": "Require a single space between ')' and '{'.",
+    "searchRegex": "\\)\\{",
+    "replaceString": ") {",
+    "severity": "Error",
+    "languages": [
+      "javascript",
+      "typescript",
+      "php",
+      "python"
+    ]
+  },
+  {
+    "id": "strict-indentation",
+    "description": "Indentation must strictly follow the parent block.",
+    "searchRegex": "^(?!\\s*\\S).+",
+    "replaceString": null,
+    "severity": "Error",
+    "languages": [
+      "*"
+    ]
+  }
+]
