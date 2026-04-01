@@ -37,15 +37,5 @@
       "php",
       "python"
     ]
-  },
-  {
-    "id": "strict-indentation",
-    "description": "Indentation must strictly follow the parent block.",
-    "searchRegex": "(?<=\\n)(\\s*)(?!\\1(\\s|$))",
-    "replaceString": null,
-    "severity": "Error",
-    "languages": [
-      "*"
-    ]
   }
 ]

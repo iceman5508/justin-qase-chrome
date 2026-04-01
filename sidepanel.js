@@ -79,6 +79,16 @@ function connectToMesh(port) {
             sendBtn.innerText = "Submit";
             sendBtn.disabled = false;
         }
+        else if (data.type === 'textEdit') {
+            // Targeted edit from the VS Code tool dispatch — use oldString/newString
+            // rather than a full file overwrite so Chrome parity matches VS Code behaviour
+            const encodedOld = encodeURIComponent(data.oldString);
+            const encodedNew = encodeURIComponent(data.newString);
+            const encodedPath = encodeURIComponent(data.filePath);
+            const card = `\n\n<div class="code-block"><div class="code-header"><span style="display:flex;align-items:center;color:#fff">${fileSvg} ${data.filePath}</span><button class="apply-file-btn" data-edit-path="${encodedPath}" data-edit-old="${encodedOld}" data-edit-new="${encodedNew}">${zapSvg} Apply Edit</button></div><pre><code>${escapeHtml(data.newString)}</code></pre></div>\n\n`;
+            conversationHistory[msgIndex].content += card;
+            renderChat();
+        }
     };
 
     ws.onclose = () => {
@@ -172,6 +182,8 @@ function parseMarkdown(text) {
     const doc = parser.parseFromString(rawHtml, 'text/html');
 
     doc.querySelectorAll('p').forEach(p => {
+        // Legacy [TERMINAL: cmd] text protocol — kept for backwards compatibility with
+        // old cached responses. New responses use the 'button' WebSocket message type.
         const termMatch = p.innerText.match(/\[TERMINAL:\s*([^\]]+)\]/);
         if (termMatch) {
             const cleanCmd = termMatch[1].trim();
@@ -198,6 +210,8 @@ function parseMarkdown(text) {
             if (cls.startsWith('language-')) language = cls.replace('language-', '');
         });
 
+        // Legacy [FILE: path] text protocol — kept for backwards compatibility with
+        // old cached responses. New responses use the apply_file button type.
         let prev = pre.previousElementSibling;
         let filename = null;
         if (prev && prev.tagName === 'P') {
@@ -243,12 +257,28 @@ function sendToVSCode(payload, btn, loadingText, successText) {
     }
 }
 
+function escapeHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 document.getElementById('responseBox').addEventListener('click', (e) => {
     const termBtn = e.target.closest('.terminal-btn');
     if (termBtn) return sendToVSCode({ action: 'execute_terminal', cmd: decodeURIComponent(termBtn.getAttribute('data-cmd')) }, termBtn, 'Staging...', 'Staged!');
 
     const applyBtn = e.target.closest('.apply-file-btn');
-    if (applyBtn) return sendToVSCode({ action: 'apply_file', filename: applyBtn.getAttribute('data-filename'), code: decodeURIComponent(applyBtn.getAttribute('data-code')) }, applyBtn, 'Applying...', 'File Saved!');
+    if (applyBtn) {
+        // Targeted edit (from justin_write_file via textEdit message) — use apply_edit
+        if (applyBtn.hasAttribute('data-edit-path')) {
+            return sendToVSCode({
+                action: 'apply_edit',
+                filePath: decodeURIComponent(applyBtn.getAttribute('data-edit-path')),
+                oldString: decodeURIComponent(applyBtn.getAttribute('data-edit-old')),
+                newString: decodeURIComponent(applyBtn.getAttribute('data-edit-new'))
+            }, applyBtn, 'Applying...', 'Applied!');
+        }
+        // Legacy full-file overwrite (manually crafted apply_file blocks)
+        return sendToVSCode({ action: 'apply_file', filename: applyBtn.getAttribute('data-filename'), code: decodeURIComponent(applyBtn.getAttribute('data-code')) }, applyBtn, 'Applying...', 'File Saved!');
+    }
 
     if (e.target.classList.contains('insert-btn')) return sendToVSCode({ action: 'insert', code: decodeURIComponent(e.target.getAttribute('data-code')) }, e.target, 'Inserting...', 'Inserted!');
 
@@ -353,7 +383,18 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
 
         const inspectBtn = document.getElementById('inspectBtn');
         const originalHtml = inspectBtn.innerHTML;
-        inspectBtn.innerHTML = `<span style="color: #fff; font-weight: bold;">Hover over the page!</span>`;
+
+        // Guard: don't start a second inspector if one is already active
+        if (inspectBtn.dataset.picking === 'true') return;
+        inspectBtn.dataset.picking = 'true';
+        inspectBtn.innerHTML = `<span style="color:#fff;font-weight:bold;">Picking… (Esc to cancel)</span>`;
+        inspectBtn.style.backgroundColor = 'var(--accent-blue)';
+
+        const resetBtn = () => {
+            inspectBtn.innerHTML = originalHtml;
+            inspectBtn.style.backgroundColor = '';
+            inspectBtn.dataset.picking = 'false';
+        };
 
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
@@ -362,18 +403,30 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
                 window.__justinPicking = true;
 
                 const overlay = document.createElement('div');
-                overlay.style = "position:fixed;pointer-events:none;z-index:2147483647;background:rgba(14,165,233,0.2);border:2px solid #0ea5e9;";
+                overlay.style = "position:fixed;pointer-events:none;z-index:2147483647;background:rgba(14,165,233,0.2);border:2px solid #0ea5e9;border-radius:2px;transition:all 0.05s;";
                 document.body.appendChild(overlay);
+
+                const cleanup = (cancelled) => {
+                    document.removeEventListener('mousemove', moveHandler);
+                    document.removeEventListener('click', clickHandler, true);
+                    document.removeEventListener('keydown', keyHandler, true);
+                    overlay.remove();
+                    window.__justinPicking = false;
+                    if (cancelled) chrome.runtime.sendMessage({ action: 'ELEMENT_PICK_CANCELLED' });
+                };
 
                 const moveHandler = (e) => {
                     const r = e.target.getBoundingClientRect();
                     overlay.style.top=r.top+'px'; overlay.style.left=r.left+'px'; overlay.style.width=r.width+'px'; overlay.style.height=r.height+'px';
                 };
 
+                const keyHandler = (e) => {
+                    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cleanup(true); }
+                };
+
                 const clickHandler = (e) => {
                     e.preventDefault(); e.stopPropagation();
-                    document.removeEventListener('mousemove', moveHandler); document.removeEventListener('click', clickHandler, true);
-                    overlay.remove(); window.__justinPicking = false;
+                    cleanup(false);
 
                     let target = e.target;
                     let frameworkComponent = "Unknown Component";
@@ -398,16 +451,26 @@ document.getElementById('inspectBtn').addEventListener('click', async () => {
 
                     chrome.runtime.sendMessage({ 
                         action: 'ELEMENT_PICKED', 
-                        data: `/debug I clicked an element inside what appears to be the \`${frameworkComponent}\` component.\n\nHere is the raw HTML:\n\`\`\`html\n${htmlSnippet}\n\`\`\`\n\nUse your \`justin_search_workspace\` or \`justin_read_file\` tools to figure out how to edit this element.` 
+                        data: `/debug I clicked an element inside what appears to be the \`${frameworkComponent}\` component.\n\nHere is the raw HTML:\n\`\`\`html\n${htmlSnippet}\n\`\`\`\n\nUse \`copilot_codebase\` to search for this component in the workspace, then read the file with \`justin_read_file\` before editing.` 
                     });
                 };
 
                 document.addEventListener('mousemove', moveHandler);
+                document.addEventListener('keydown', keyHandler, true);
                 document.addEventListener('click', clickHandler, true); 
             }
         });
-        setTimeout(() => { inspectBtn.innerHTML = originalHtml; }, NOTIFICATION_TIMEOUT);
-    } catch (error) {}
+
+        // Button resets only when the pick completes or is cancelled — handled via message listener below
+        const cancelListener = (message) => {
+            if (message.action === 'ELEMENT_PICKED' || message.action === 'ELEMENT_PICK_CANCELLED') {
+                resetBtn();
+                chrome.runtime.onMessage.removeListener(cancelListener);
+            }
+        };
+        chrome.runtime.onMessage.addListener(cancelListener);
+
+    } catch (error) { document.getElementById('inspectBtn').dataset.picking = 'false'; }
 });
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -415,6 +478,7 @@ chrome.runtime.onMessage.addListener((message) => {
         switchTool('/debug');
         document.getElementById('taskInput').value = message.data;
     }
+    // ELEMENT_PICK_CANCELLED is handled inline in the inspectBtn listener — nothing to do here
 });
 
 document.getElementById('sendBtn').addEventListener('click', async () => {
